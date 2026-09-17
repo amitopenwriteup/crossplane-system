@@ -94,12 +94,46 @@ You should see only `region` — exactly what you declared, nothing from the und
 
 ---
 
-## Module 3: Write the Composition
+## Module 3: Install the Patch-and-Transform Function
+
+Recent Crossplane versions removed the old "Resources mode" Composition (a bare `spec.resources:` list). Every Composition is now a **Pipeline** of one or more **Functions** — small components that tell Crossplane what to compose. For plain base-and-patch composition (no custom logic), the community-maintained `function-patch-and-transform` reproduces the old behavior, so you install it once per cluster and every Composition's pipeline calls it.
+
+> **How to tell you need this:** if `kubectl apply` on a Composition fails with `strict decoding error: unknown field "spec.resources"`, your cluster's Crossplane version requires Pipeline mode — this module is why.
+
+```bash
+vi function-patch-and-transform.yaml
+```
+
+```yaml
+apiVersion: pkg.crossplane.io/v1
+kind: Function
+metadata:
+  name: function-patch-and-transform
+spec:
+  package: xpkg.upbound.io/crossplane-contrib/function-patch-and-transform:v0.7.0
+```
+
+```bash
+kubectl apply -f function-patch-and-transform.yaml
+kubectl get functions
+```
+
+Confirm `INSTALLED` and `HEALTHY` are both `True` before moving on — the Composition in the next module references this Function by name, so it must exist first.
+
+```bash
+kubectl get pods -n crossplane-system -l pkg.crossplane.io/function=function-patch-and-transform
+```
+
+A Function gets its own pod, the same way a Provider does.
+
+---
+
+## Module 4: Write the Composition (Pipeline Mode)
 
 **Explain first:**
 
 ```bash
-kubectl explain composition.spec.resources
+kubectl explain composition.spec.pipeline
 ```
 
 ```bash
@@ -115,21 +149,38 @@ spec:
   compositeTypeRef:
     apiVersion: storage.example.org/v1alpha1
     kind: XSimpleBucket
-  resources:
-    - name: bucket
-      base:
-        apiVersion: s3.aws.upbound.io/v1beta1
-        kind: Bucket
-        spec:
-          forProvider: {}
-          providerConfigRef:
-            name: default
-      patches:
-        - fromFieldPath: spec.parameters.region
-          toFieldPath: spec.forProvider.region
+  mode: Pipeline
+  pipeline:
+    - step: patch-and-transform
+      functionRef:
+        name: function-patch-and-transform
+      input:
+        apiVersion: pt.fn.crossplane.io/v1beta1
+        kind: Resources
+        resources:
+          - name: bucket
+            base:
+              apiVersion: s3.aws.upbound.io/v1beta1
+              kind: Bucket
+              spec:
+                forProvider: {}
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.parameters.region
+                toFieldPath: spec.forProvider.region
 ```
 
-This is the whole mapping: one `base` object, one `patch`. Nothing here references another composed resource, so there's no `matchControllerRef` needed yet — that only shows up once you have more than one resource that must reference each other, as in the VPC lab.
+Compared to the old shape, three things changed and nothing else did:
+
+- **`mode: Pipeline`** marks this as a function-based Composition.
+- **`pipeline:`** holds one step here (`patch-and-transform`), naming the Function to call via `functionRef`.
+- Your entire old `resources:` block now lives inside that step's **`input`**, under `kind: Resources` — this is the payload `function-patch-and-transform` reads to know what to compose. It is identical content to before, just nested one level deeper.
+
+One more required change: every patch now needs an explicit `type: FromCompositeFieldPath`. The old Resources-mode Composition defaulted to this type silently; Pipeline mode's strict decoding requires you to state it.
+
+This is still the whole mapping for a one-resource Composition: one `base` object, one `patch`, now wrapped in one pipeline step. Nothing here references another composed resource, so there's no `matchControllerRef` needed yet — that only shows up once you have more than one resource that must reference each other, as in the VPC lab.
 
 ```bash
 kubectl apply -f composition-simplebucket.yaml
@@ -141,7 +192,7 @@ Look for `Synced: True`.
 
 ---
 
-## Module 4: Submit a Claim
+## Module 5: Submit a Claim
 
 ```bash
 vi claim-simplebucket.yaml
@@ -173,7 +224,7 @@ kubectl get pods -n crossplane-system -l pkg.crossplane.io/provider=provider-aws
 
 ---
 
-## Module 5: Trace Claim → XR → Managed Resource
+## Module 6: Trace Claim → XR → Managed Resource
 
 ```bash
 kubectl get simplebucket,xsimplebucket,bucket
@@ -206,7 +257,7 @@ aws s3api list-buckets --query "Buckets[?contains(Name, 'my-first-bucket')]"
 
 ---
 
-## Module 6: Cleanup
+## Module 7: Cleanup
 
 ```bash
 kubectl delete -f claim-simplebucket.yaml
@@ -218,14 +269,16 @@ kubectl api-resources | grep storage.example.org
 
 The last command should return nothing.
 
+> **Leave `function-patch-and-transform` installed.** It's a cluster-wide, reusable Function — every future Composition's pipeline (including the `VPCNetwork` lab) references it by name. Only remove it with `kubectl delete -f function-patch-and-transform.yaml` if you're tearing down Crossplane entirely.
+
 ---
 
 ## What's Different in the Full VPCNetwork Lab
 
-Once this pattern feels familiar, the multi-resource `VPCNetwork` lab adds exactly three new ideas on top of what you just did:
+Once this pattern feels familiar, the multi-resource `VPCNetwork` lab adds exactly three new ideas on top of what you just did — everything else, including `mode: Pipeline` and the `function-patch-and-transform` step, stays exactly the same:
 
-1. **Multiple `resources:` entries** in one Composition instead of one.
+1. **Multiple entries in the pipeline step's `resources:` list** instead of one.
 2. **`matchControllerRef: true`** so composed resources reference each other automatically instead of by name.
 3. **`connectionDetails`** to surface values (like a VPC ID) from a composed resource up into a Secret.
 
-Everything else — XRD schema, `compositionRef`, claim → XR → Managed Resource tracing — is identical to what you just did here.
+Everything else — XRD schema, `compositionRef`, claim → XR → Managed Resource tracing — is identical to what you just did here. If your `VPCNetwork` Composition still uses the old bare `spec.resources:` shape, apply the same Module 3/4 fix here: reuse the already-installed `function-patch-and-transform` Function and nest that `resources:` list inside a `mode: Pipeline` / `pipeline:` step.
