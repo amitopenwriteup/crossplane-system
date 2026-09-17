@@ -28,9 +28,9 @@ Press `i`, type the following, then `Esc` and `:wq`:
 apiVersion: pkg.crossplane.io/v1
 kind: Provider
 metadata:
-  name: provider-aws-vpc
+  name: provider-aws-ec2
 spec:
-  package: xpkg.upbound.io/upbound/provider-aws-vpc:v1.3.0
+  package: xpkg.upbound.io/upbound/provider-aws-ec2:v1.3.0
 ```
 
 **Step 1a — Explain the Provider schema before applying:**
