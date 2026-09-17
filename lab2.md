@@ -1,323 +1,243 @@
-# Lab: Enable Versioning, Public Access & Host a Static HTML Page
+# Crossplane AWS Provider — Hands-on Lab Guide
 
-This lab extends the `crossplane-healthcheck-bucket` created earlier. You'll enable versioning, open public access, host a static website, upload an `index.html` file, and verify the page is publicly reachable.
+This step-by-step hands-on lab guides you through setting up the Crossplane AWS provider, AWS CLI on Linux, configuring credentials, and troubleshooting common issues.
 
-> **IMPORTANT — Replace the bucket name:** Every YAML manifest in this lab uses `crossplane-healthcheck-bucket` as a placeholder (in `spec.forProvider.bucket`, in the policy's `Resource` ARN, and in the website URL at the end). **Replace it with your own actual bucket name in every file before applying**, or all steps will fail or target the wrong bucket.
-
-> **Note:** `region` is a **required** field under `spec.forProvider` on every S3 sub-resource MR in this provider version — omitting it fails validation with `spec.forProvider.region: Required value`. Every manifest below already includes it (`us-east-1`); change it to match your actual bucket's region.
-
-> **Note:** Field names below (`forProvider.*`) reflect the `provider-aws-s3` v1.x CRD schema. Before applying, confirm exact fields for your installed version with:
-> ```bash
-> kubectl explain bucketversioning.spec.forProvider
-> kubectl explain bucketpublicaccessblock.spec.forProvider
-> kubectl explain bucketwebsiteconfiguration.spec.forProvider
-> kubectl explain bucketpolicy.spec.forProvider
-> kubectl explain bucketobject.spec.forProvider
-> ```
+YAML manifests are created with the **vi editor** and applied with `kubectl apply -f <file>.yaml`.
 
 ---
 
-## 1. Enable Bucket Versioning
+## 1. Prerequisites: Install AWS CLI on Linux
 
-**Step 1 — Create the manifest with vi:**
+Run the official AWS CLI v2 installation bundle on your Linux host:
 
 ```bash
-vi bucketversioning.yaml
+# Download and extract the installer
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+
+# Run installation
+sudo ./aws/install
+
+# Verify installation
+aws --version
 ```
 
-Press `i`, type the following, then `Esc` and `:wq`:
+To verify success, ensure the output returns `aws-cli/2.x.x` without any missing dependency errors.
+
+---
+
+## 2. Install AWS Provider in Crossplane: Family vs Monolithic
+
+Crossplane provides two provider installation models:
+
+- **Family Providers (Recommended):** Modern, modular approach. Installs a lightweight base provider plus service-specific sub-providers (e.g., `provider-aws-s3`, `provider-aws-ec2`) to conserve cluster resources and API limits.
+- **Monolithic Provider (Legacy):** Installs all AWS CRDs in a single controller. Can cause cluster API slowness due to hundreds of CRDs.
+
+**Step 1 — Create the manifest file with vi:**
+
+```bash
+vi provider-aws-s3.yaml
+```
+
+Press `i` to enter insert mode, paste/type the following, then press `Esc` and save with `:wq`:
+
+```yaml
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-aws-s3
+spec:
+  package: xpkg.upbound.io/upbound/provider-aws-s3:v1.3.0
+```
+
+**Step 2 — Apply the manifest:**
+
+```bash
+kubectl apply -f provider-aws-s3.yaml
+```
+
+**Step 3 — Verify the provider package status:**
+
+```bash
+kubectl get provider.pkg.crossplane.io
+```
+
+Ensure `HEALTHY` reports `True` and `INSTALLED` reports `True`.
+
+---
+
+## 3. Understand ProviderConfig Architecture: Authentication Binding
+
+The **ProviderConfig** object serves as the operational bridge between managed resources and AWS authentication:
+
+- It specifies **how** Crossplane authenticates (e.g., Static Access Keys, IRSA, Web Identity).
+- It defines the default target AWS region.
+- Individual custom resources (like an S3 Bucket) reference a specific `ProviderConfig` via `spec.providerConfigRef.name`.
+
+---
+
+## 4. Configure AWS Credentials Secret: Static Keys or IRSA
+
+Choose **Option A** for quick local/testing setups or **Option B** for production EKS environments.
+
+### Option A: Static IAM User Access Keys (Testing/Local)
+
+**Step 1 — Create the credentials file with vi:**
+
+```bash
+vi aws-credentials.ini
+```
+
+Press `i` to enter insert mode, type the following (replace with your actual keys), then press `Esc` and save with `:wq`:
+
+```ini
+[default]
+aws_access_key_id = YOUR_AWS_ACCESS_KEY_ID
+aws_secret_access_key = YOUR_AWS_SECRET_ACCESS_KEY
+```
+
+**Step 2 — Store the credential file in Kubernetes as a Secret:**
+
+```bash
+kubectl create secret generic aws-secret \
+  -n crossplane-system \
+  --from-file=creds=./aws-credentials.ini
+```
+
+**Step 3 — Verify secret creation:**
+
+```bash
+kubectl get secret aws-secret -n crossplane-system
+```
+
+---
+
+## 5. Apply ProviderConfig & Verify Health
+
+**Step 1 — Create the ProviderConfig manifest with vi:**
+
+```bash
+vi providerconfig-aws.yaml
+```
+
+Press `i` to enter insert mode, paste/type the following, then press `Esc` and save with `:wq`:
+
+```yaml
+apiVersion: aws.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: default
+spec:
+  credentials:
+    source: Secret
+    secretRef:
+      namespace: crossplane-system
+      name: aws-secret
+      key: creds
+```
+
+**Step 2 — Apply the ProviderConfig:**
+
+```bash
+kubectl apply -f providerconfig-aws.yaml
+```
+
+**Step 3 — Create a test resource manifest with vi:**
+
+```bash
+vi healthcheck-bucket.yaml
+```
+
+Press `i` to enter insert mode, paste/type the following, then press `Esc` and save with `:wq`:
 
 ```yaml
 apiVersion: s3.aws.upbound.io/v1beta1
-kind: BucketVersioning
+kind: Bucket
 metadata:
-  name: crossplane-healthcheck-bucket-versioning
+  name: crossplane-healthcheck-bucket
 spec:
   forProvider:
-    bucket: crossplane-healthcheck-bucket   # replace with your bucket name
     region: us-east-1
-    versioningConfiguration:
-      - status: Enabled
   providerConfigRef:
     name: default
 ```
 
-**Step 2 — Apply it:**
+**Step 4 — Apply the test resource:**
 
 ```bash
-kubectl apply -f bucketversioning.yaml
+kubectl apply -f healthcheck-bucket.yaml
 ```
 
-**Step 3 — Verify:**
+**Step 5 — Check reconciliation status:**
 
 ```bash
-kubectl get bucketversioning crossplane-healthcheck-bucket-versioning
+kubectl get bucket crossplane-healthcheck-bucket
 ```
 
-Confirm `READY` and `SYNCED` are both `True`.
+Verify that both `READY` and `SYNCED` columns report `True`.
 
 ---
 
-## 2. Disable the Public Access Block (Allow Public Access)
+## 6. Common Provider Troubleshooting: Diagnostic Runbook
 
-By default, AWS blocks public access on every new bucket. To host a public website, you must explicitly turn that block off.
-
-**Step 1 — Create the manifest with vi:**
-
-```bash
-vi bucketpublicaccessblock.yaml
-```
-
-Press `i`, type the following, then `Esc` and `:wq`:
-
-```yaml
-apiVersion: s3.aws.upbound.io/v1beta1
-kind: BucketPublicAccessBlock
-metadata:
-  name: crossplane-healthcheck-bucket-pab
-spec:
-  forProvider:
-    bucket: crossplane-healthcheck-bucket   # replace with your bucket name
-    region: us-east-1
-    blockPublicAcls: false
-    blockPublicPolicy: false
-    ignorePublicAcls: false
-    restrictPublicBuckets: false
-  providerConfigRef:
-    name: default
-```
-
-**Step 2 — Apply it:**
+### Issue 1: CRDs Not Appearing / Stuck Package
+- **Symptom:** `kubectl get bucket` returns "error: the server doesn't have a resource type".
+- **Fix:** Check if package download or extraction failed due to cluster resource limits:
 
 ```bash
-kubectl apply -f bucketpublicaccessblock.yaml
+kubectl describe provider.pkg.crossplane.io provider-aws-s3
 ```
 
-**Step 3 — Verify:**
+### Issue 2: Provider Pod Crash / OOMKilled
+- **Symptom:** Provider pod stays in `CrashLoopBackOff` or gets killed.
+- **Fix:** Monolithic providers consume >2GB RAM. Check pod logs and increase deployment memory limits:
 
 ```bash
-kubectl get bucketpublicaccessblock crossplane-healthcheck-bucket-pab
+kubectl logs -n crossplane-system -l pkg.crossplane.io/provider=provider-aws-s3
+```
+
+### Issue 3: Authentication / Unreconciled Resources
+- **Symptom:** Resources stay `READY: False` with `AuthFailure` or `AccessDenied`.
+- **Fix:** Verify event conditions on the resource:
+
+```bash
+kubectl describe bucket crossplane-healthcheck-bucket
 ```
 
 ---
 
-## 3. Add a Bucket Policy for Public Read
+## 7. Cross-Verify the Bucket via AWS CLI
 
-**Step 1 — Create the manifest with vi:**
+Once `kubectl get bucket` reports `READY: True` and `SYNCED: True`, cross-check that the bucket actually exists in AWS using the AWS CLI you installed in Step 1.
 
-```bash
-vi bucketpolicy.yaml
-```
-
-Press `i`, type the following, then `Esc` and `:wq`:
-
-```yaml
-apiVersion: s3.aws.upbound.io/v1beta1
-kind: BucketPolicy
-metadata:
-  name: crossplane-healthcheck-bucket-policy
-spec:
-  forProvider:
-    bucket: crossplane-healthcheck-bucket   # replace with your bucket name
-    region: us-east-1
-    policy: |
-      {
-        "Version": "2012-10-17",
-        "Statement": [
-          {
-            "Sid": "PublicReadGetObject",
-            "Effect": "Allow",
-            "Principal": "*",
-            "Action": "s3:GetObject",
-            "Resource": "arn:aws:s3:::crossplane-healthcheck-bucket/*"
-          }
-        ]
-      }
-  providerConfigRef:
-    name: default
-```
-
-> **Replace the bucket name in TWO places here**: both `spec.forProvider.bucket` and inside the policy JSON's `Resource` ARN (`arn:aws:s3:::<your-bucket-name>/*`). If they don't match, the policy won't apply correctly.
-
-**Step 2 — Apply it:**
+**Step 1 — Configure the AWS CLI with credentials (if not already done):**
 
 ```bash
-kubectl apply -f bucketpolicy.yaml
+aws configure
 ```
 
-**Step 3 — Verify:**
+You'll be prompted for:
+
+```
+AWS Access Key ID [None]: YOUR_AWS_ACCESS_KEY_ID
+AWS Secret Access Key [None]: YOUR_AWS_SECRET_ACCESS_KEY
+Default region name [None]: us-east-1
+Default output format [None]: json
+```
+
+**Step 2 — List buckets to confirm creation:**
 
 ```bash
-kubectl get bucketpolicy crossplane-healthcheck-bucket-policy
+aws s3 ls
 ```
 
----
+You should see `crossplane-healthcheck-bucket` in the output, confirming Crossplane successfully provisioned it in your AWS account:
 
-## 4. Enable Static Website Hosting
-
-**Step 1 — Create the manifest with vi:**
-
-```bash
-vi bucketwebsiteconfiguration.yaml
+```
+crossplane-healthcheck-bucket
 ```
 
-Press `i`, type the following, then `Esc` and `:wq`:
-
-```yaml
-apiVersion: s3.aws.upbound.io/v1beta1
-kind: BucketWebsiteConfiguration
-metadata:
-  name: crossplane-healthcheck-bucket-website
-spec:
-  forProvider:
-    bucket: crossplane-healthcheck-bucket   # replace with your bucket name
-    region: us-east-1
-    indexDocument:
-      - suffix: index.html
-  providerConfigRef:
-    name: default
-```
-
-**Step 2 — Apply it:**
-
-```bash
-kubectl apply -f bucketwebsiteconfiguration.yaml
-```
-
-**Step 3 — Verify:**
-
-```bash
-kubectl get bucketwebsiteconfiguration crossplane-healthcheck-bucket-website
-```
-
----
-
-## 5. Create a Simple HTML Page
-
-**Step 1 — Create `index.html` with vi:**
-
-```bash
-vi index.html
-```
-
-Press `i`, type the following, then `Esc` and `:wq`:
-
-```html
-<!DOCTYPE html>
-<html>
-  <head>
-    <title>Crossplane Demo Page</title>
-  </head>
-  <body>
-    <h1>Hello from Crossplane!</h1>
-    <p>This page is hosted on an S3 bucket provisioned entirely by Crossplane.</p>
-  </body>
-</html>
-```
-
----
-
-## 6. Upload the HTML File to the Bucket
-
-You can upload the file either declaratively (via Crossplane) or directly (via AWS CLI). Pick one.
-
-### Option A: Declarative Upload with Crossplane (BucketObject)
-
-**Step 1 — Create the manifest with vi:**
-
-```bash
-vi bucketobject.yaml
-```
-
-Press `i`, type the following, then `Esc` and `:wq`. Paste the HTML content directly under `content:` as plain text (no encoding needed):
-
-```yaml
-apiVersion: s3.aws.upbound.io/v1beta1
-kind: BucketObject
-metadata:
-  name: crossplane-healthcheck-bucket-index
-spec:
-  forProvider:
-    bucket: crossplane-healthcheck-bucket   # replace with your bucket name
-    region: us-east-1
-    key: index.html
-    contentType: text/html
-    content: |
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <title>Crossplane Demo Page</title>
-        </head>
-        <body>
-          <h1>Hello from Crossplane!</h1>
-          <p>This page is hosted on an S3 bucket provisioned entirely by Crossplane.</p>
-        </body>
-      </html>
-  providerConfigRef:
-    name: default
-```
-
-**Step 2 — Apply it:**
-
-```bash
-kubectl apply -f bucketobject.yaml
-```
-
-**Step 3 — Verify:**
-
-```bash
-kubectl get bucketobject crossplane-healthcheck-bucket-index
-```
-
----
-
-## 7. Get the Website URL via kubectl
-
-Crossplane stores the AWS-computed website endpoint in the resource's `status.atProvider` field — no AWS CLI needed.
-
-**Step 1 — Inspect the full status to find the endpoint field:**
-
-```bash
-kubectl get bucketwebsiteconfiguration crossplane-healthcheck-bucket-website -o yaml
-```
-
-Look under `status.atProvider` for a field such as `websiteEndpoint` (the exact key name can vary slightly by provider version).
-
-**Step 2 — Print just the endpoint directly:**
-
-```bash
-kubectl get bucketwebsiteconfiguration crossplane-healthcheck-bucket-website -o jsonpath='{.status.atProvider.websiteEndpoint}'
-```
-
-> If this returns empty, the field name differs in your provider version — check the full `-o yaml` output from Step 1 and adjust the `jsonpath` key accordingly (e.g. it may be nested differently, such as `.status.atProvider.websiteDomain`).
-
-**Step 3 — Build the full URL from the endpoint:**
-
-```bash
-echo "http://$(kubectl get bucketwebsiteconfiguration crossplane-healthcheck-bucket-website -o jsonpath='{.status.atProvider.websiteEndpoint}')"
-```
-
-**Step 4 — Test it:**
-
-```bash
-curl -I "http://$(kubectl get bucketwebsiteconfiguration crossplane-healthcheck-bucket-website -o jsonpath='{.status.atProvider.websiteEndpoint}')"
-```
-
-Expect `HTTP/1.1 200 OK`. Open the printed URL in a browser to see the "Hello from Crossplane!" page.
-
----
-
-## 8. Cleanup (Optional)
-
-To tear down what this lab created, in reverse order:
-
-```bash
-kubectl delete -f bucketobject.yaml
-kubectl delete -f bucketwebsiteconfiguration.yaml
-kubectl delete -f bucketpolicy.yaml
-kubectl delete -f bucketpublicaccessblock.yaml
-kubectl delete -f bucketversioning.yaml
-```
+If the bucket doesn't appear here even though `kubectl` shows `READY: True`, double-check that the AWS CLI region (Step 1 above) matches the `spec.forProvider.region` set in `healthcheck-bucket.yaml`.
 
 ---
 
@@ -325,7 +245,7 @@ kubectl delete -f bucketversioning.yaml
 
 | Action | Command |
 |---|---|
-| Open/create a file | `vi filename` |
+| Open/create a file | `vi filename.yaml` |
 | Enter insert mode (to type/paste) | `i` |
 | Exit insert mode | `Esc` |
 | Save and quit | `:wq` then `Enter` |
