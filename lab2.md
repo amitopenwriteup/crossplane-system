@@ -7,7 +7,6 @@ YAML manifests are created with the **vi editor** and applied with `kubectl appl
 ---
 
 ## 1. Prerequisites: Install AWS CLI on Linux
-**Est. time:** 3 mins
 
 Run the official AWS CLI v2 installation bundle on your Linux host:
 
@@ -114,7 +113,6 @@ kubectl get secret aws-secret -n crossplane-system
 ---
 
 ## 5. Apply ProviderConfig & Verify Health
-**Est. time:** 2 mins
 
 **Step 1 — Create the ProviderConfig manifest with vi:**
 
