@@ -114,7 +114,7 @@ kubectl get secret aws-secret -n crossplane-system
 ---
 
 ## 5. Apply ProviderConfig & Verify Health
-**Est. time:** 2 mins
+
 
 **Step 1 — Create the ProviderConfig manifest with vi:**
 
