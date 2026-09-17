@@ -377,7 +377,7 @@ Match the AWS-assigned IDs (`vpc-xxxx`, `subnet-xxxx`, etc.) against what's show
 
 ---
 
-## Module 4: Beyond XR/XRD — Other Platform Capabilities
+
 
 ### 4.1 ManagedResourceActivationPolicy (MRAP) — Reduce the Provider's Footprint
 
@@ -422,13 +422,7 @@ kubectl get managedresourceactivationpolicies
 kubectl describe managedresourceactivationpolicy vpc-core-only
 ```
 
-**Confirm activation state per CRD:**
 
-```bash
-kubectl get managedresourcedefinitions | grep ec2.aws.upbound.io
-```
-
-`ManagedResourceDefinition` (MRD) entries show the current activation `STATE` (`Active`/`Inactive`) per CRD — confirm only your listed six show `Active`.
 
 **Confirm no pod churn — this is a control-plane-level gate, not a pod restart:**
 
