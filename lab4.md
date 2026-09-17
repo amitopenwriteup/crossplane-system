@@ -33,14 +33,6 @@ spec:
   package: xpkg.upbound.io/upbound/provider-aws-ec2:v1.3.0
 ```
 
-**Step 1a — Explain the Provider schema before applying:**
-
-```bash
-kubectl explain provider.pkg.crossplane.io
-kubectl explain provider.pkg.crossplane.io.spec
-```
-
-This shows you exactly where `package` and (later) `runtimeConfigRef` come from in the `pkg.crossplane.io/v1` `Provider` CRD, so the YAML above isn't "magic" — every field maps to a schema property.
 
 **Step 2 — Apply it:**
 
