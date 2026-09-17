@@ -1,12 +1,9 @@
 # Lab: Crossplane XR & XRD — Building `VPCNetwork` Incrementally, One Resource at a Time
 
-The previous version of this lab wrote the whole `VPCNetwork` API — XRD, Function, Composition, Claim — in one shot, with all six Managed Resources already wired together. That's realistic for a finished platform API, but it hides *how* a Composition actually gets built up.
-
-This version does the opposite: it starts with **just the VPC**, gets that working end-to-end (XRD → Function pipeline → XR → MR → connection secret), and then **appends** one Managed Resource at a time — Subnet, InternetGateway, RouteTable, RouteTableAssociation, SecurityGroup — onto the same XRD and the same Composition's `pipeline` array. After each stage you re-apply the claim and verify what changed: one more field in the schema, one more step in the pipeline, one more owned resource under the XR, one more key in the connection secret.
 
 > **Prerequisite:** Complete Module 1 and 2 of the base lab (`provider-aws-ec2` installed and healthy, all six Managed Resource CRDs present).
 >
-> **Why steps, not a single resources list:** `function-patch-and-transform` lets a Composition's `spec.pipeline` hold *multiple* steps, each calling the function once with its own `input.resources` list. Every step sees the composed resources the steps before it already produced and can add more on top, and `matchControllerRef: true` selectors still resolve across steps because they match on "owned by this XR," not on "produced by this step." That means appending a capability to the API is literally appending an entry to the `pipeline` array — which is the thing this lab wants to make visible.
+
 
 ---
 
