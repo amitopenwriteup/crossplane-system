@@ -3,30 +3,24 @@
 The previous lab created six separate Managed Resources by hand: `VPC`, `Subnet`, `InternetGateway`, `RouteTable`, `RouteTableAssociation`, and `SecurityGroup`. A platform team doesn't want application teams applying six YAML files and wiring `*Ref` fields together every time they need a network. This lab wraps all six into **one Composite Resource Definition (XRD)** and **one Composition**, so a consumer applies a single `VPCNetwork` claim and gets the whole stack.
 
 > **Prerequisite:** Complete Module 1 and 2 of the previous lab first (`provider-aws-ec2` installed and healthy). This lab doesn't touch the underlying Managed Resources — it adds an abstraction layer on top of them.
+>
+
 
 ---
 
 ## Module 1: Concepts — XRD, Composition, XR, and Claim
 
-Four objects work together:
+Four objects work together, plus one new supporting object this version of Crossplane requires:
 
 | Object | What it is | Who creates it |
 |---|---|---|
 | **XRD** (`CompositeResourceDefinition`) | Defines the schema of your new API (e.g. `VPCNetwork`, with fields like `region` and `cidrBlock`) | Platform team, once |
-| **Composition** | Maps that schema onto real Managed Resources (VPC, Subnet, etc.) and patches values between them | Platform team, once (can have several per XRD) |
+| **Function** (`pkg.crossplane.io/v1beta1`) | An installed package (like a Provider) that a Composition's pipeline calls to actually build resources — e.g. `function-patch-and-transform` | Platform team, once, before writing Compositions |
+| **Composition** | A `Pipeline` of function steps that maps the XRD schema onto real Managed Resources and patches values between them | Platform team, once (can have several per XRD) |
 | **XR** (Composite Resource) | The cluster-scoped instance Crossplane creates when a claim is submitted — the "assembled" object | Crossplane, automatically |
 | **Claim** | The namespaced object an application team actually applies — this is the "single API" they interact with | Application team |
 
-```
-Claim (namespaced, what app teams touch)
-   │  1:1
-   ▼
-XR / Composite Resource (cluster-scoped, Crossplane-managed)
-   │  composed of
-   ▼
-VPC + Subnet + InternetGateway + RouteTable + RouteTableAssociation + SecurityGroup
-   (the Managed Resources from the previous lab)
-```
+> Think of a Function the same way you think of a Provider: a Provider gives Crossplane the CRDs + controller for *talking to a cloud API* (e.g. `provider-aws-ec2`); a Function gives Crossplane the logic for *building the desired resource set from a composite's spec* during a Composition's pipeline run. Both are installed as packages and both show up as pods in `crossplane-system`.
 
 ---
 
@@ -132,13 +126,46 @@ This now reflects *your* schema, not an upstream provider's — confirming the X
 
 ---
 
-## Module 3: Author the Composition — Map the API to Real Resources
+## Module 3: Install a Function, then Author the Composition
+
+### 3a. Install `function-patch-and-transform`
+
+Compositions in Pipeline mode don't build resources themselves — they hand the work to Functions. Install the one that replicates the classic base/patches/connectionDetails behavior:
+
+```bash
+vi function-patch-and-transform.yaml
+```
+
+```yaml
+apiVersion: pkg.crossplane.io/v1beta1
+kind: Function
+metadata:
+  name: function-patch-and-transform
+spec:
+  package: xpkg.upbound.io/crossplane-contrib/function-patch-and-transform:v0.7.0
+```
+
+```bash
+kubectl apply -f function-patch-and-transform.yaml
+kubectl get functions
+```
+
+**Confirm it's installed and healthy — same pattern as checking a Provider:**
+
+```bash
+kubectl get functions.pkg.crossplane.io
+kubectl get pods -n crossplane-system | grep function-patch-and-transform
+```
+
+Wait for `INSTALLED: True` and `HEALTHY: True` before moving on — a Composition that references a Function which isn't ready yet will fail to compose with a "function not found" style error.
+
+### 3b. Author the Composition
 
 **Explain first:**
 
 ```bash
 kubectl explain composition.spec
-kubectl explain composition.spec.resources
+kubectl explain composition.spec.pipeline
 ```
 
 ```bash
@@ -156,116 +183,134 @@ spec:
   compositeTypeRef:
     apiVersion: aws.platform.example.org/v1alpha1
     kind: XVPCNetwork
-  resources:
-    - name: vpc
-      base:
-        apiVersion: ec2.aws.upbound.io/v1beta1
-        kind: VPC
-        spec:
-          forProvider:
-            enableDnsSupport: true
-            enableDnsHostnames: true
-          providerConfigRef:
-            name: default
-      patches:
-        - fromFieldPath: spec.parameters.region
-          toFieldPath: spec.forProvider.region
-        - fromFieldPath: spec.parameters.vpcCidrBlock
-          toFieldPath: spec.forProvider.cidrBlock
-      connectionDetails:
-        - name: vpcId
-          fromFieldPath: status.atProvider.id
+  mode: Pipeline
+  pipeline:
+    - step: patch-and-transform
+      functionRef:
+        name: function-patch-and-transform
+      input:
+        apiVersion: pt.fn.crossplane.io/v1beta1
+        kind: Resources
+        resources:
+          - name: vpc
+            base:
+              apiVersion: ec2.aws.upbound.io/v1beta1
+              kind: VPC
+              spec:
+                forProvider:
+                  enableDnsSupport: true
+                  enableDnsHostnames: true
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.parameters.region
+                toFieldPath: spec.forProvider.region
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.parameters.vpcCidrBlock
+                toFieldPath: spec.forProvider.cidrBlock
+            connectionDetails:
+              - name: vpcId
+                type: FromFieldPath
+                fromFieldPath: status.atProvider.id
 
-    - name: subnet
-      base:
-        apiVersion: ec2.aws.upbound.io/v1beta1
-        kind: Subnet
-        spec:
-          forProvider:
-            mapPublicIpOnLaunch: true
-            vpcIdSelector:
-              matchControllerRef: true
-          providerConfigRef:
-            name: default
-      patches:
-        - fromFieldPath: spec.parameters.region
-          toFieldPath: spec.forProvider.region
-        - fromFieldPath: spec.parameters.subnetCidrBlock
-          toFieldPath: spec.forProvider.cidrBlock
-        - fromFieldPath: spec.parameters.availabilityZone
-          toFieldPath: spec.forProvider.availabilityZone
-      connectionDetails:
-        - name: subnetId
-          fromFieldPath: status.atProvider.id
+          - name: subnet
+            base:
+              apiVersion: ec2.aws.upbound.io/v1beta1
+              kind: Subnet
+              spec:
+                forProvider:
+                  mapPublicIpOnLaunch: true
+                  vpcIdSelector:
+                    matchControllerRef: true
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.parameters.region
+                toFieldPath: spec.forProvider.region
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.parameters.subnetCidrBlock
+                toFieldPath: spec.forProvider.cidrBlock
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.parameters.availabilityZone
+                toFieldPath: spec.forProvider.availabilityZone
+            connectionDetails:
+              - name: subnetId
+                type: FromFieldPath
+                fromFieldPath: status.atProvider.id
 
-    - name: internet-gateway
-      base:
-        apiVersion: ec2.aws.upbound.io/v1beta1
-        kind: InternetGateway
-        spec:
-          forProvider:
-            vpcIdSelector:
-              matchControllerRef: true
-          providerConfigRef:
-            name: default
-      patches:
-        - fromFieldPath: spec.parameters.region
-          toFieldPath: spec.forProvider.region
+          - name: internet-gateway
+            base:
+              apiVersion: ec2.aws.upbound.io/v1beta1
+              kind: InternetGateway
+              spec:
+                forProvider:
+                  vpcIdSelector:
+                    matchControllerRef: true
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.parameters.region
+                toFieldPath: spec.forProvider.region
 
-    - name: route-table
-      base:
-        apiVersion: ec2.aws.upbound.io/v1beta1
-        kind: RouteTable
-        spec:
-          forProvider:
-            vpcIdSelector:
-              matchControllerRef: true
-            route:
-              - destinationCidrBlock: 0.0.0.0/0
-                gatewayIdSelector:
-                  matchControllerRef: true
-          providerConfigRef:
-            name: default
-      patches:
-        - fromFieldPath: spec.parameters.region
-          toFieldPath: spec.forProvider.region
+          - name: route-table
+            base:
+              apiVersion: ec2.aws.upbound.io/v1beta1
+              kind: RouteTable
+              spec:
+                forProvider:
+                  vpcIdSelector:
+                    matchControllerRef: true
+                  route:
+                    - destinationCidrBlock: 0.0.0.0/0
+                      gatewayIdSelector:
+                        matchControllerRef: true
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.parameters.region
+                toFieldPath: spec.forProvider.region
 
-    - name: route-table-association
-      base:
-        apiVersion: ec2.aws.upbound.io/v1beta1
-        kind: RouteTableAssociation
-        spec:
-          forProvider:
-            subnetIdSelector:
-              matchControllerRef: true
-            routeTableIdSelector:
-              matchControllerRef: true
-          providerConfigRef:
-            name: default
-      patches:
-        - fromFieldPath: spec.parameters.region
-          toFieldPath: spec.forProvider.region
+          - name: route-table-association
+            base:
+              apiVersion: ec2.aws.upbound.io/v1beta1
+              kind: RouteTableAssociation
+              spec:
+                forProvider:
+                  subnetIdSelector:
+                    matchControllerRef: true
+                  routeTableIdSelector:
+                    matchControllerRef: true
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.parameters.region
+                toFieldPath: spec.forProvider.region
 
-    - name: security-group
-      base:
-        apiVersion: ec2.aws.upbound.io/v1beta1
-        kind: SecurityGroup
-        spec:
-          forProvider:
-            vpcIdSelector:
-              matchControllerRef: true
-            description: Default security group managed via VPCNetwork composition
-          providerConfigRef:
-            name: default
-      patches:
-        - fromFieldPath: spec.parameters.region
-          toFieldPath: spec.forProvider.region
+          - name: security-group
+            base:
+              apiVersion: ec2.aws.upbound.io/v1beta1
+              kind: SecurityGroup
+              spec:
+                forProvider:
+                  vpcIdSelector:
+                    matchControllerRef: true
+                  description: Default security group managed via VPCNetwork composition
+                providerConfigRef:
+                  name: default
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.parameters.region
+                toFieldPath: spec.forProvider.region
 ```
 
-Two things worth calling out versus the hand-written manifests from the last lab:
+Four things worth calling out versus the hand-written manifests from the last lab, and versus the classic-mode Composition this replaces:
 
-- **`matchControllerRef: true` replaces every hardcoded `vpcIdRef` / `gatewayIdRef` / `subnetIdRef`.** Since all six resources here are owned by the same XR, Crossplane can automatically wire a Subnet to *its* VPC without you naming it — this is what makes the Composition reusable across many `VPCNetwork` claims instead of just one hardcoded stack.
-- **`connectionDetails`** surfaces `status.atProvider.id` from the VPC and Subnet up into a Kubernetes Secret, which is how the `vpcId` / `subnetId` keys declared in the XRD's `connectionSecretKeys` actually get populated.
+
 
 ```bash
 kubectl apply -f composition-vpcnetwork.yaml
@@ -278,7 +323,7 @@ kubectl get composition
 kubectl describe composition vpcnetwork-aws
 ```
 
-Look for `Synced: True` — a mismatched `compositeTypeRef` or unknown field path here is the most common error at this step.
+Look for `Synced: True` — a mismatched `compositeTypeRef`, an unknown field path, or a `functionRef` pointing at a Function that isn't installed/healthy are the most common errors at this step.
 
 ```bash
 kubectl api-resources | grep composition
@@ -288,7 +333,7 @@ kubectl api-resources | grep composition
 
 ## Module 4: Consume the API — Submit a Claim
 
-This is the payload an application team writes. Notice it never mentions `VPC`, `Subnet`, or any provider-specific field — only the parameters your XRD schema exposed.
+This is the payload an application team writes. Notice it never mentions `VPC`, `Subnet`, any provider-specific field, or the fact that a pipeline/function is doing the work underneath — only the parameters your XRD schema exposed.
 
 **Explain first (this now reflects your schema exactly):**
 
@@ -323,13 +368,13 @@ kubectl apply -f claim-vpcnetwork.yaml
 kubectl get vpcnetwork -n default
 ```
 
-**Watch the pod(s) — still no new provider pod, same as the last lab:**
+**Watch the pod(s) — you'll now see the function pod join the picture:**
 
 ```bash
 kubectl get pods -n crossplane-system
 ```
 
-One `provider-aws-ec2` pod continues to reconcile every resource this claim creates — the Composition changes *what gets created*, not *what reconciles it*.
+One `provider-aws-ec2` pod continues to reconcile every Managed Resource this claim creates, same as before. The `function-patch-and-transform` pod is called synchronously during each Composition run to decide *what* those resources should look like — it doesn't reconcile them itself and won't show sustained activity the way a Provider pod does.
 
 ---
 
@@ -355,6 +400,8 @@ Note the `Resource Refs` in the status pointing at the underlying `XVPCNetwork`,
 kubectl get xvpcnetwork -o wide
 kubectl describe xvpcnetwork <name-from-above>
 ```
+
+If something's missing here, check the XR's `status.conditions` for a `FunctionPipelineFailed` type before anything else — that's Pipeline mode's equivalent of a classic Composition patch error.
 
 **Confirm the connection secret populated:**
 
@@ -386,11 +433,12 @@ kubectl delete -f claim-vpcnetwork.yaml
 kubectl get vpc,subnet,internetgateway,routetable,routetableassociation,securitygroup
 ```
 
-Confirm all six are gone, then remove the platform-level objects:
+Confirm all six are gone, then remove the platform-level objects — Composition and XRD as before, plus the Function if no other Composition on the cluster still depends on it:
 
 ```bash
 kubectl delete -f composition-vpcnetwork.yaml
 kubectl delete -f xrd-vpcnetwork.yaml
+kubectl delete -f function-patch-and-transform.yaml
 kubectl api-resources | grep platform.example.org
 ```
 
@@ -398,13 +446,3 @@ The last command should return nothing once the XRD is gone.
 
 ---
 
-## Quick Reference: New Objects Introduced in This Lab
-
-| Purpose | Command pattern |
-|---|---|
-| Define a new composite API | `kubectl explain compositeresourcedefinition.spec` |
-| See the new claim-facing Kind's schema | `kubectl explain <claimkind>.spec.parameters` |
-| Map schema fields to Managed Resources | `kubectl explain composition.spec.resources` |
-| List claims / composites | `kubectl get <claimkind>,<X composite kind>` |
-| Trace claim → XR → Managed Resources | `kubectl describe <claimkind> <name>` then `kubectl describe <Xkind> <name>` |
-| Read connection secret values | `kubectl get secret <name> -o jsonpath='{.data.<key>}' \| base64 -d` |
