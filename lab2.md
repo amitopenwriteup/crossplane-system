@@ -7,7 +7,7 @@ YAML manifests are created with the **vi editor** and applied with `kubectl appl
 ---
 
 ## 1. Prerequisites: Install AWS CLI on Linux
-
+**Est. time:** 3 mins
 
 Run the official AWS CLI v2 installation bundle on your Linux host:
 
@@ -114,7 +114,7 @@ kubectl get secret aws-secret -n crossplane-system
 ---
 
 ## 5. Apply ProviderConfig & Verify Health
-
+**Est. time:** 2 mins
 
 **Step 1 — Create the ProviderConfig manifest with vi:**
 
@@ -205,6 +205,41 @@ kubectl logs -n crossplane-system -l pkg.crossplane.io/provider=provider-aws-s3
 ```bash
 kubectl describe bucket crossplane-healthcheck-bucket
 ```
+
+---
+
+## 7. Cross-Verify the Bucket via AWS CLI
+
+Once `kubectl get bucket` reports `READY: True` and `SYNCED: True`, cross-check that the bucket actually exists in AWS using the AWS CLI you installed in Step 1.
+
+**Step 1 — Configure the AWS CLI with credentials (if not already done):**
+
+```bash
+aws configure
+```
+
+You'll be prompted for:
+
+```
+AWS Access Key ID [None]: YOUR_AWS_ACCESS_KEY_ID
+AWS Secret Access Key [None]: YOUR_AWS_SECRET_ACCESS_KEY
+Default region name [None]: us-east-1
+Default output format [None]: json
+```
+
+**Step 2 — List buckets to confirm creation:**
+
+```bash
+aws s3 ls
+```
+
+You should see `crossplane-healthcheck-bucket` in the output, confirming Crossplane successfully provisioned it in your AWS account:
+
+```
+crossplane-healthcheck-bucket
+```
+
+If the bucket doesn't appear here even though `kubectl` shows `READY: True`, double-check that the AWS CLI region (Step 1 above) matches the `spec.forProvider.region` set in `healthcheck-bucket.yaml`.
 
 ---
 
