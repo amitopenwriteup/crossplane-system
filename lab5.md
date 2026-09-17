@@ -176,11 +176,7 @@ Compared to the old shape, three things changed and nothing else did:
 
 - **`mode: Pipeline`** marks this as a function-based Composition.
 - **`pipeline:`** holds one step here (`patch-and-transform`), naming the Function to call via `functionRef`.
-- Your entire old `resources:` block now lives inside that step's **`input`**, under `kind: Resources` — this is the payload `function-patch-and-transform` reads to know what to compose. It is identical content to before, just nested one level deeper.
 
-One more required change: every patch now needs an explicit `type: FromCompositeFieldPath`. The old Resources-mode Composition defaulted to this type silently; Pipeline mode's strict decoding requires you to state it.
-
-This is still the whole mapping for a one-resource Composition: one `base` object, one `patch`, now wrapped in one pipeline step. Nothing here references another composed resource, so there's no `matchControllerRef` needed yet — that only shows up once you have more than one resource that must reference each other, as in the VPC lab.
 
 ```bash
 kubectl apply -f composition-simplebucket.yaml
@@ -273,12 +269,3 @@ The last command should return nothing.
 
 ---
 
-## What's Different in the Full VPCNetwork Lab
-
-Once this pattern feels familiar, the multi-resource `VPCNetwork` lab adds exactly three new ideas on top of what you just did — everything else, including `mode: Pipeline` and the `function-patch-and-transform` step, stays exactly the same:
-
-1. **Multiple entries in the pipeline step's `resources:` list** instead of one.
-2. **`matchControllerRef: true`** so composed resources reference each other automatically instead of by name.
-3. **`connectionDetails`** to surface values (like a VPC ID) from a composed resource up into a Secret.
-
-Everything else — XRD schema, `compositionRef`, claim → XR → Managed Resource tracing — is identical to what you just did here. If your `VPCNetwork` Composition still uses the old bare `spec.resources:` shape, apply the same Module 3/4 fix here: reuse the already-installed `function-patch-and-transform` Function and nest that `resources:` list inside a `mode: Pipeline` / `pipeline:` step.
