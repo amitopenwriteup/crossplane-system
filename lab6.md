@@ -324,9 +324,9 @@ kubectl explain vpcnetwork.spec.parameters
 
 Confirm the new fields show up on the claim-facing schema.
 
-### 3c. Edit the Composition — append a new pipeline step
+### 3c. Edit the Composition — append `subnet` directly into the existing step's `resources:` array
 
-This is the append the lab is built around: the whole VPC step stays untouched; a second step is added to the `pipeline` array. (As the note in Module 1 explains, you could instead add `subnet` to the *first* step's `resources:` array with identical results — the separate-step structure here is for a clean, isolated diff per stage, not a functional requirement.)
+This is the append the lab is built around, done the way Module 1's note said was possible: the `vpc` entry stays untouched, and `subnet` is appended as a **second item in the same step's `resources:` list** — no new `step:` is created, because both resources are handled by the same function (`function-patch-and-transform`) and there's no need for a second step yet.
 
 ```bash
 vi composition-vpcnetwork.yaml
@@ -368,14 +368,7 @@ spec:
                 type: FromFieldPath
                 fromFieldPath: status.atProvider.id
 
-    # ↓↓↓ new step, appended ↓↓↓
-    - step: subnet
-      functionRef:
-        name: function-patch-and-transform
-      input:
-        apiVersion: pt.fn.crossplane.io/v1beta1
-        kind: Resources
-        resources:
+          # ↓↓↓ new resource, appended into the SAME step's resources list ↓↓↓
           - name: subnet
             base:
               apiVersion: ec2.aws.upbound.io/v1beta1
@@ -403,7 +396,7 @@ spec:
                 fromFieldPath: status.atProvider.id
 ```
 
-Note `vpcIdSelector.matchControllerRef: true` in the new step: the Subnet doesn't need to know the VPC's name or which step created it — it only needs to be owned by the same XR, which it is, since both steps compose resources for the one XR that's currently reconciling.
+Notice the `pipeline` array itself is still just **one entry** (`step: vpc`) — only its `resources:` list grew, from one item to two. `vpcIdSelector.matchControllerRef: true` on the Subnet works the same regardless: the Subnet doesn't need to know the VPC's name, only that it's owned by the same XR — which holds whether the VPC and Subnet come from the same step or different steps.
 
 ```bash
 kubectl apply -f composition-vpcnetwork.yaml
@@ -468,10 +461,12 @@ No new claim parameters needed — an Internet Gateway only needs `region` and a
 
 Nothing to edit. This stage is a good moment to notice that **not every appended resource needs a new parameter or a new connection key** — some resources exist purely to make the network functional and don't surface anything to the caller.
 
-### 4c. Composition — append the third pipeline step
+### 4c. Composition — append a new pipeline step
+
+`InternetGateway` is the point where this lab introduces its **second** `step:` (the first step still holds `vpc` and `subnet` together as two resources). It's a new step rather than a third resource in the existing one just to keep this stage's diff easy to spot in the walkthrough — functionally it could go either way, same as `subnet` could have.
 
 ```yaml
-    # ↓↓↓ new step, appended after "subnet" ↓↓↓
+    # ↓↓↓ new step, appended after the vpc/subnet step ↓↓↓
     - step: internet-gateway
       functionRef:
         name: function-patch-and-transform
@@ -691,13 +686,13 @@ Confirm `READY` and `SYNCED` are `True` across every row.
 kubectl describe xvpcnetwork <name-from-above>
 ```
 
-`Resource Refs` now lists all **six** Managed Resources — exactly the six pipeline steps in `composition-vpcnetwork.yaml`, in the order they were appended.
+`Resource Refs` now lists all **six** Managed Resources, in the order they were appended — `vpc` and `subnet` from the first step, then one MR per step after that.
 
 ```bash
 kubectl describe composition vpcnetwork-aws
 ```
 
-`spec.pipeline` now has six `step` entries — you can literally count them against the six-resource chain above.
+`spec.pipeline` now has **five** `step` entries (`vpc`, `internet-gateway`, `route-table`, `route-table-association`, `security-group`) producing **six** Managed Resources total — the first step's `resources:` list is the one holding two (`vpc` and `subnet`).
 
 ```bash
 kubectl get secret team-a-network-conn -n default -o jsonpath='{.data}' | jq 'keys'
@@ -737,14 +732,16 @@ The last command should return nothing once the XRD is gone.
 
 ## Quick Reference: What Changed at Each Stage
 
-| Stage | MR added | New claim parameter(s) | New connection key | Pipeline step count |
-|---|---|---|---|---|
-| 1 | VPC | `region`, `vpcCidrBlock` | `vpcId` | 1 |
-| 2 | Subnet | `subnetCidrBlock`, `availabilityZone` | `subnetId` | 2 |
-| 3 | InternetGateway | — | — | 3 |
-| 4 | RouteTable | — | — | 4 |
-| 5 | RouteTableAssociation | — | — | 5 |
-| 6 | SecurityGroup | — | — | 6 |
+| Stage | MR added | New claim parameter(s) | New connection key | Pipeline step count | Owned resources so far |
+|---|---|---|---|---|---|
+| 1 | VPC | `region`, `vpcCidrBlock` | `vpcId` | 1 (`vpc` step, 1 resource) | 1 |
+| 2 | Subnet | `subnetCidrBlock`, `availabilityZone` | `subnetId` | 1 (`vpc` step, now 2 resources) | 2 |
+| 3 | InternetGateway | — | — | 2 (new `internet-gateway` step) | 3 |
+| 4 | RouteTable | — | — | 3 | 4 |
+| 5 | RouteTableAssociation | — | — | 4 | 5 |
+| 6 | SecurityGroup | — | — | 5 | 6 |
+
+Note the last two columns diverge from Stage 2 onward: **owned resources** always equals the number of Managed Resources composed (six by the end), but **pipeline step count** only equals that when every resource gets its own step. Since `subnet` was folded into the `vpc` step, the lab ends with five steps producing six resources — the `Resource Refs` count on the XR is what actually tracks "how many MRs exist," not the step count.
 
 | Purpose | Command pattern |
 |---|---|
