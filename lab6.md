@@ -30,6 +30,17 @@ pipeline:      pipeline:              pipeline:                              pip
 
 Each row above is a full, valid Composition on its own — you could stop after any stage and have a working (if smaller) API.
 
+### Note: why one step per resource, instead of one step with six resources?
+
+Every step in this lab calls the *same* function (`function-patch-and-transform`), so nothing stops you from putting all six Managed Resources inside a single step's `resources:` array. It would compose the same six MRs, with the same owner refs and the same connection secret keys. Splitting them into separate steps is a design choice, not a Crossplane requirement, made for four reasons:
+
+1. **Per-step status and debugging.** Crossplane reports pipeline execution results per `step` name. With separate steps, a failure tells you exactly which one broke (`step: subnet` failed). With everything in one step's resource list, you only learn "the step failed" and have to scan the whole list to find the culprit.
+2. **This lab is deliberately incremental.** The exercise is built around "append one step per stage, watch `Resource Refs` grow by one, watch the connection secret grow." That maps cleanly onto `pipeline: [step1] → [step1, step2] → ...`. Editing an array inside one giant step would give the same end state but a much less obvious diff at each stage.
+3. **Steps matter once you mix functions.** Here every step happens to use the same function, so combining them costs nothing functionally. But separate steps become load-bearing the moment a *different* function enters the pipeline — e.g. `function-patch-and-transform` for the six MRs, followed by a step running `function-auto-ready` or `function-extra-resources` that consumes the previous step's output via the pipeline context. That only works with distinct steps, since a step is the unit that's bound to one function.
+4. **Readability at scale.** Six resources in one array vs. six named steps is a wash. Twenty or more resources in a single step's array is a much harder file to scan or diff in a PR than twenty named steps.
+
+Keep this in mind as you go through Stages 2–6 below: each stage appends a **step**, but you could just as validly append an entry to the **first step's `resources:` array** and get an identical `XVPCNetwork`. The lab uses steps so that each stage's change is a clean, isolated diff you can point to.
+
 ---
 
 ## Module 2: Install the Function (once)
@@ -315,7 +326,7 @@ Confirm the new fields show up on the claim-facing schema.
 
 ### 3c. Edit the Composition — append a new pipeline step
 
-This is the append the lab is built around: the whole VPC step stays untouched; a second step is added to the `pipeline` array.
+This is the append the lab is built around: the whole VPC step stays untouched; a second step is added to the `pipeline` array. (As the note in Module 1 explains, you could instead add `subnet` to the *first* step's `resources:` array with identical results — the separate-step structure here is for a clean, isolated diff per stage, not a functional requirement.)
 
 ```bash
 vi composition-vpcnetwork.yaml
