@@ -427,14 +427,7 @@ Nothing to edit. This stage is a good moment to notice that **not every appended
 `InternetGateway` is the point where this lab introduces its **second** `step:` (the first step still holds `vpc` and `subnet` together as two resources). It's a new step rather than a third resource in the existing one just to keep this stage's diff easy to spot in the walkthrough — functionally it could go either way, same as `subnet` could have.
 
 ```yaml
-    # ↓↓↓ new step, appended after the vpc/subnet step ↓↓↓
-    - step: internet-gateway
-      functionRef:
-        name: function-patch-and-transform
-      input:
-        apiVersion: pt.fn.crossplane.io/v1beta1
-        kind: Resources
-        resources:
+    # ↓↓↓ new step, appended after the vpc/subnet resource block step ↓↓↓
           - name: internet-gateway
             base:
               apiVersion: ec2.aws.upbound.io/v1beta1
@@ -462,21 +455,7 @@ kubectl apply -f claim-vpcnetwork.yaml
 kubectl get vpcnetwork,xvpcnetwork,vpc,subnet,internetgateway
 ```
 
-### 4e. Verify Stage 3
 
-```bash
-kubectl describe xvpcnetwork <name-from-above>
-```
-
-`Resource Refs` now lists **three** entries. Connection secret keys are unchanged — confirm:
-
-```bash
-kubectl get secret team-a-network-conn -n default -o jsonpath='{.data}' | jq 'keys'
-```
-
-Still `["subnetId","vpcId"]` — appending a step doesn't force a connection key to appear unless that step's resource declares `connectionDetails`.
-
----
 
 ## Stage 4: Append RouteTable
 
@@ -491,14 +470,8 @@ Needs a VPC to belong to and the Internet Gateway from Stage 3 as its default ro
 ### 5b. Composition — append the fourth step
 
 ```yaml
-    # ↓↓↓ new step, appended after "internet-gateway" ↓↓↓
-    - step: route-table
-      functionRef:
-        name: function-patch-and-transform
-      input:
-        apiVersion: pt.fn.crossplane.io/v1beta1
-        kind: Resources
-        resources:
+    # ↓↓↓ new resource, appended after "internet-gateway" ↓↓↓
+ 
           - name: route-table
             base:
               apiVersion: ec2.aws.upbound.io/v1beta1
@@ -519,7 +492,7 @@ Needs a VPC to belong to and the Internet Gateway from Stage 3 as its default ro
                 toFieldPath: spec.forProvider.region
 ```
 
-`gatewayIdSelector.matchControllerRef: true` here is doing the same cross-step resolution as the Subnet's `vpcIdSelector` in Stage 2 — this step is written after the `internet-gateway` step in the array, but the mechanism that finds the gateway is "owned by the same XR," not "produced by the previous step," so step *order* here is for readability, not correctness.
+
 
 ```bash
 kubectl apply -f composition-vpcnetwork.yaml
@@ -550,14 +523,8 @@ Ties the Subnet (Stage 2) to the RouteTable (Stage 4) — two selectors, still n
 ### 6b. Composition — append the fifth step
 
 ```yaml
-    # ↓↓↓ new step, appended after "route-table" ↓↓↓
-    - step: route-table-association
-      functionRef:
-        name: function-patch-and-transform
-      input:
-        apiVersion: pt.fn.crossplane.io/v1beta1
-        kind: Resources
-        resources:
+    # ↓↓↓ new resource, appended after "route-table" ↓↓↓
+
           - name: route-table-association
             base:
               apiVersion: ec2.aws.upbound.io/v1beta1
@@ -605,14 +572,8 @@ Last piece — attaches to the VPC, no new claim parameters.
 ### 7b. Composition — append the sixth and final step
 
 ```yaml
-    # ↓↓↓ new step, appended after "route-table-association" ↓↓↓
-    - step: security-group
-      functionRef:
-        name: function-patch-and-transform
-      input:
-        apiVersion: pt.fn.crossplane.io/v1beta1
-        kind: Resources
-        resources:
+    # ↓↓↓ new resource, appended after "route-table-association" ↓↓↓
+
           - name: security-group
             base:
               apiVersion: ec2.aws.upbound.io/v1beta1
@@ -691,22 +652,3 @@ The last command should return nothing once the XRD is gone.
 
 ---
 
-## Quick Reference: What Changed at Each Stage
-
-| Stage | MR added | New claim parameter(s) | New connection key | Pipeline step count | Owned resources so far |
-|---|---|---|---|---|---|
-| 1 | VPC | `region`, `vpcCidrBlock` | `vpcId` | 1 (`vpc` step, 1 resource) | 1 |
-| 2 | Subnet | `subnetCidrBlock`, `availabilityZone` | `subnetId` | 1 (`vpc` step, now 2 resources) | 2 |
-| 3 | InternetGateway | — | — | 2 (new `internet-gateway` step) | 3 |
-| 4 | RouteTable | — | — | 3 | 4 |
-| 5 | RouteTableAssociation | — | — | 4 | 5 |
-| 6 | SecurityGroup | — | — | 5 | 6 |
-
-Note the last two columns diverge from Stage 2 onward: **owned resources** always equals the number of Managed Resources composed (six by the end), but **pipeline step count** only equals that when every resource gets its own step. Since `subnet` was folded into the `vpc` step, the lab ends with five steps producing six resources — the `Resource Refs` count on the XR is what actually tracks "how many MRs exist," not the step count.
-
-| Purpose | Command pattern |
-|---|---|
-| Confirm a step was appended, not replacing prior steps | `kubectl describe composition <name>` — count `step:` entries |
-| Confirm the XR picked up a newly appended resource | `kubectl describe <Xkind> <name>` — count `Resource Refs` |
-| Confirm which keys a connection secret currently has | `kubectl get secret <name> -o jsonpath='{.data}' \| jq 'keys'` |
-| Force reconciliation after editing only the Composition | `kubectl apply -f <claim-file>` (re-apply, even unchanged) |
