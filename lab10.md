@@ -180,9 +180,7 @@ spec:
     vpcCidrBlock: 10.0.0.0/16
 ```
 
-**Note on `spec.crossplane`:** in both modern v2 scopes (`Namespaced` and `Cluster`), the XR's `spec` is entirely your own schema — there's no separate Claim object to hold user fields, so Crossplane can't put its own control fields (composition selection, resource refs, etc.) directly under `spec` without risking a collision with something you define. It nests all of that under `spec.crossplane` instead. `compositionRef` therefore lives at `spec.crossplane.compositionRef`, not `spec.compositionRef`.
 
-**Note on scope:** this XRD uses `scope: Cluster`, so the XR has no `metadata.namespace` and no `kubectl get`/`describe` command below needs a `-n <namespace>` flag. If your own provider ships namespaced MR CRDs (check `kubectl get crd | grep -i '\.m\.'`), you'd use `scope: Namespaced` instead, add `namespace: default` back to this manifest, and add `-n default` to every command that follows.
 
 ```bash
 kubectl apply -f xr-vpcnetwork.yaml
