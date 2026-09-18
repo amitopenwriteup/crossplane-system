@@ -244,22 +244,7 @@ kubectl apply -f claim-vpcnetwork.yaml
 kubectl get vpcnetwork,xvpcnetwork,vpc
 ```
 
-### 2e. Verify Stage 1 — one owned resource, one connection key
 
-```bash
-kubectl describe xvpcnetwork <name-from-above>
-```
-
-`Resource Refs` should list exactly **one** entry: the VPC.
-
-```bash
-kubectl get secret team-a-network-conn -n default -o jsonpath='{.data}' | jq 'keys'
-```
-
-Should print `["vpcId"]` only — this is the baseline you'll watch grow.
-
-```bash
-kubectl get secret team-a-network-conn -n default -o jsonpath='{.data.vpcId}' | base64 -d
 ```
 
 ---
