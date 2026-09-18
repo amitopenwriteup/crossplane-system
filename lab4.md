@@ -241,14 +241,11 @@ spec:
     region: us-east-1
     vpcIdRef:
       name: crossplane-lab-vpc
-    route:
-      - destinationCidrBlock: 0.0.0.0/0
-        gatewayIdRef:
-          name: crossplane-lab-igw
     tags:
       Name: crossplane-lab-rt
   providerConfigRef:
     name: default
+
 ```
 
 ```bash
