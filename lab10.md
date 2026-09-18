@@ -1,21 +1,6 @@
 # Lab: Crossplane XR & XRD — Building `VPCNetwork` Incrementally, One Resource at a Time
 
 > **Prerequisite:** Complete Module 1 and 2 of the base lab (`provider-aws-ec2` installed and healthy, all six Managed Resource CRDs present).
->
-> **Crossplane version:** This lab targets **native Crossplane v2** (tested against v2.4.1). It uses the v2 **`Cluster`** scope throughout — there is no Claim object anywhere in this lab, and `LegacyCluster` scope is never used. You apply the composite resource (the XR) directly, exactly as the app team would.
->
-> **Why `Cluster` and not `Namespaced`:** v2's `Namespaced` scope is the more common choice when your provider ships namespaced Managed Resource CRDs (typically under a `.m.<group>` API group). At the time of writing, `provider-aws-ec2` doesn't yet ship namespaced variants of `VPC`, `Subnet`, `InternetGateway`, `RouteTable`, `RouteTableAssociation`, or `SecurityGroup` — only the legacy cluster-scoped CRDs exist (`vpcs.ec2.aws.upbound.io`, etc.). Kubernetes doesn't allow a cluster-scoped object to have an owner reference to a namespaced one, so a `Namespaced`-scope XR can never successfully compose these six resources. `Cluster` scope is the other modern, Claim-free v2 option, and it *can* own cluster-scoped resources directly — check `kubectl get crd | grep -i '\.m\.'` against your own provider version before assuming either scope; if namespaced MR CRDs do exist for your provider release, `Namespaced` scope works just as well and only needs `metadata.namespace` added back onto the XR and its `kubectl` commands.
-
-### What v2-native (no Claims) means for this lab
-
-In v1 (and in v2's `LegacyCluster` scope), the app team applies a namespaced **Claim**, and Crossplane creates a separate cluster-scoped **XR** behind it. This lab skips that layer entirely: the XRD is declared with `scope: Cluster`, so the XR itself (`XVPCNetwork`) is a cluster-scoped object, applied directly — there's no claim kind, no `claimRef`, and no second object to keep in sync. `Cluster` scope still uses the modern `spec.crossplane.compositionRef` field (like `Namespaced` does); only `LegacyCluster` uses the old flat `spec.compositionRef` plus Claims.
-
-This lab also does **not** publish a connection Secret at any stage. Every field you need to confirm a resource came up correctly (VPC ID, Subnet ID, etc.) is read straight off the Managed Resource's own `status`, via `kubectl get <mr> -o yaml` or `kubectl describe <mr>`. There's no `connectionSecretKeys` on the XRD, no `connectionDetails` on any composed resource, and no `writeConnectionSecretToRef` anywhere in the Composition.
-
----
-
-
----
 
 ## Module 2: Install the Function (once)
 
