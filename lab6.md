@@ -404,23 +404,7 @@ kubectl apply -f claim-vpcnetwork.yaml
 kubectl get vpcnetwork,xvpcnetwork,vpc,subnet
 ```
 
-### 3e. Verify Stage 2 — one more owned resource, one more connection key
 
-```bash
-kubectl describe xvpcnetwork <name-from-above>
-```
-
-`Resource Refs` should now list **two** entries: VPC and Subnet. The VPC's ref is unchanged from Stage 1 — appending a step didn't touch it.
-
-```bash
-kubectl get secret team-a-network-conn -n default -o jsonpath='{.data}' | jq 'keys'
-```
-
-Should now print `["subnetId","vpcId"]`.
-
-```bash
-kubectl get secret team-a-network-conn -n default -o jsonpath='{.data.subnetId}' | base64 -d
-```
 
 ---
 
