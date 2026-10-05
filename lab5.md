@@ -2,7 +2,90 @@
 
 Before wrapping six resources into a `VPCNetwork` API, see the XRD/Composition/XR pattern with the smallest possible example: **one Managed Resource, one field.** This lab wraps a single `Bucket` (from `provider-aws-s3`) behind a custom `SimpleBucket` API.
 
-> **Prerequisites:** Crossplane **v2.x** installed, and `provider-aws-s3` **v2.x** installed and healthy (`kubectl get provider.pkg.crossplane.io`). Provider v2 ships *namespaced* managed resources (`*.aws.m.upbound.io`), which this lab uses.
+> **Prerequisites:** Crossplane **v2.x** installed, and `provider-aws-s3` **v2.x** installed and healthy. Provider v2 ships *namespaced* managed resources (`*.aws.m.upbound.io`), which this lab uses. Module 0 below checks this and fixes it if needed.
+
+---
+
+## Module 0: Verify the Provider is v2.x (and has a ClusterProviderConfig)
+
+This lab composes **namespaced** Buckets (`s3.aws.m.upbound.io`). A `provider-aws-s3` **v1.x** package only ships the cluster-scoped `s3.aws.upbound.io` API, so the Composition fails later with:
+
+```
+cannot compose resources: cannot check if composed resource "bucket" is namespaced ...
+no matches for kind "Bucket" in version "s3.aws.m.upbound.io/v1beta1"
+```
+
+**Check the installed version and CRDs:**
+
+```bash
+kubectl get provider.pkg.crossplane.io
+kubectl get crd | grep buckets.s3
+```
+
+You need `provider-aws-s3` at `v2.x` and **both** `buckets.s3.aws.upbound.io` (legacy, cluster-scoped) and `buckets.s3.aws.m.upbound.io` (namespaced). If the namespaced CRD is missing, upgrade the provider.
+
+**Upgrade the provider to match the provider family version:**
+
+```bash
+vi provider-aws-s3.yaml
+```
+
+```yaml
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-aws-s3
+spec:
+  package: xpkg.upbound.io/upbound/provider-aws-s3:v2.8.2
+```
+
+> Use the same version as `upbound-provider-family-aws` (`kubectl get provider.pkg.crossplane.io`), or the newest v2.x tag on the Upbound Marketplace.
+
+```bash
+kubectl apply -f provider-aws-s3.yaml
+kubectl get providerrevision.pkg.crossplane.io -w | grep aws-s3
+```
+
+A new revision appears as `Active` (the old v1 one becomes `Inactive`). Wait until the new revision shows healthy `True`; this takes a few minutes while the image is pulled and the new CRDs are installed.
+
+```bash
+kubectl get pods -n crossplane-system | grep provider-aws-s3
+kubectl get crd buckets.s3.aws.m.upbound.io
+```
+
+**Create a v2 `ClusterProviderConfig`.** The v1 `ProviderConfig` (group `aws.upbound.io`) is a different API and is not used by namespaced Buckets.
+
+```bash
+kubectl get clusterproviderconfig.aws.m.upbound.io
+```
+
+If there is no `default`, create one:
+
+```bash
+vi clusterproviderconfig.yaml
+```
+
+```yaml
+apiVersion: aws.m.upbound.io/v1beta1
+kind: ClusterProviderConfig
+metadata:
+  name: default
+spec:
+  credentials:
+    source: Secret
+    secretRef:
+      namespace: crossplane-system
+      name: aws-creds
+      key: creds
+```
+
+```bash
+kubectl apply -f clusterproviderconfig.yaml
+```
+
+Adjust the secret name and key to match your existing AWS credentials secret.
+
+> Existing v1 Buckets from earlier labs are unaffected: a v2 provider keeps serving the legacy cluster-scoped APIs alongside the new ones.
 
 ---
 
@@ -289,3 +372,57 @@ kubectl api-resources | grep storage.example.org
 The last command should return nothing.
 
 > **Leave `functions.yaml` applied.** Both Functions are cluster-wide and reusable — every future Composition (including the `VPCNetwork` lab) references them by name. Remove them with `kubectl delete -f functions.yaml` only if you're tearing down Crossplane entirely.
+
+---
+
+## Troubleshooting
+
+### `no matches for kind "Bucket" in version "s3.aws.m.upbound.io/v1beta1"`
+
+The XR shows this in `kubectl describe simplebucket my-first-bucket -n default` under Events:
+
+```
+Warning  ComposeResources  ...  cannot compose resources: cannot check if composed resource "bucket"
+is namespaced (a Bucket named ): failed to get restmapping: no matches for kind "Bucket"
+in version "s3.aws.m.upbound.io/v1beta1"
+```
+
+The namespaced Bucket CRD isn't registered. Work through these in order:
+
+**1. Is the provider on v2.x?**
+
+```bash
+kubectl get provider.pkg.crossplane.io
+kubectl get providerrevision.pkg.crossplane.io | grep aws-s3
+```
+
+- Package `v1.x` → upgrade it (Module 0).
+- Package `v2.x` with the new revision `Active` but healthy `False` → it's still starting. Wait and watch with `kubectl get providerrevision.pkg.crossplane.io -w | grep aws-s3`.
+
+**2. Is the new revision failing?**
+
+```bash
+kubectl get pods -n crossplane-system | grep provider-aws-s3
+kubectl describe providerrevision.pkg.crossplane.io <new-revision-name> | tail -25
+kubectl logs -n crossplane-system deploy/<new-revision-name> --tail=30
+```
+
+`ImagePullBackOff` or `CrashLoopBackOff` points to a package pull error or a dependency problem with the provider family. If the revision stays `Inactive`, check for `revisionActivationPolicy: Manual` on the Provider.
+
+**3. Does the CRD exist?**
+
+```bash
+kubectl get crd buckets.s3.aws.m.upbound.io
+```
+
+If it exists but the error persists, Crossplane's REST mapper is stale. Restart it:
+
+```bash
+kubectl rollout restart deployment crossplane -n crossplane-system
+```
+
+The XR retries automatically, so no reapply is needed once the CRD exists.
+
+**4. Bucket created but not syncing?**
+
+Make sure a `ClusterProviderConfig` named `default` exists (Module 0) and that the Composition's `providerConfigRef` uses `kind: ClusterProviderConfig`.
