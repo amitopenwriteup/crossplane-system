@@ -1,28 +1,40 @@
-# Lab: Crossplane XR & XRD Basics — One Resource, One API
+# Lab: Crossplane XRD & XR Basics (Crossplane v2) — One Resource, One API
 
-Before wrapping six resources into a `VPCNetwork` API, it's worth seeing the XRD/Composition/XR/Claim pattern with the smallest possible example: **one Managed Resource, one field.** This lab wraps a single `Bucket` (from `provider-aws-s3`) behind a custom `SimpleBucket` API.
+Before wrapping six resources into a `VPCNetwork` API, see the XRD/Composition/XR pattern with the smallest possible example: **one Managed Resource, one field.** This lab wraps a single `Bucket` (from `provider-aws-s3`) behind a custom `SimpleBucket` API.
 
-> **Prerequisite:** `provider-aws-s3` installed and healthy (`kubectl get provider.pkg.crossplane.io`).
+> **Prerequisites:** Crossplane **v2.x** installed, and `provider-aws-s3` **v2.x** installed and healthy (`kubectl get provider.pkg.crossplane.io`). Provider v2 ships *namespaced* managed resources (`*.aws.m.upbound.io`), which this lab uses.
 
 ---
 
-## Module 1: The Four Pieces, Minimal Version
+## What changed from the v1 lab
+
+| v1 lab | v2 lab |
+| --- | --- |
+| XRD `apiextensions.crossplane.io/v1` | XRD `apiextensions.crossplane.io/v2` |
+| `claimNames` + a Claim you apply | **No Claims.** XRs are namespaced, so you apply the XR directly |
+| Cluster-scoped `XSimpleBucket` + namespaced `SimpleBucket` | One namespaced `SimpleBucket` |
+| `spec.compositionRef` | `spec.crossplane.compositionRef` (Crossplane machinery lives under `spec.crossplane`) |
+| `spec.parameters.region` | `spec.region` (your fields can sit directly under `spec`) |
+| `referenceable: true` | removed (not needed in v2) |
+| Bucket `s3.aws.upbound.io/v1beta1` (cluster-scoped) | Bucket `s3.aws.m.upbound.io/v1beta1` (namespaced) |
+| `providerConfigRef: {name: default}` | `providerConfigRef: {kind: ClusterProviderConfig, name: default}` |
+| Composition `apiextensions.crossplane.io/v1`, Pipeline mode | Unchanged (Composition is still `v1`) |
+
+---
+
+## Module 1: The Three Pieces, Minimal Version
 
 | Object | Role here |
-|---|---|
-| **XRD** | Defines a `SimpleBucket` API with exactly one input: `region` |
+| --- | --- |
+| **XRD** | Defines a namespaced `SimpleBucket` API with exactly one input: `region` |
 | **Composition** | Says "a `SimpleBucket` becomes one `Bucket` Managed Resource" |
-| **XR** | The cluster-scoped object Crossplane creates automatically |
-| **Claim** | The namespaced `SimpleBucket` you actually apply |
+| **XR** | The `SimpleBucket` you apply (namespaced) |
 
 ```
-Claim (SimpleBucket, namespaced)
+XR (SimpleBucket, namespaced)
    │
    ▼
-XR (XSimpleBucket, cluster-scoped)
-   │
-   ▼
-Bucket (the Managed Resource from provider-aws-s3)
+Bucket (namespaced Managed Resource from provider-aws-s3)
 ```
 
 ---
@@ -40,16 +52,14 @@ vi xrd-simplebucket.yaml
 ```
 
 ```yaml
-apiVersion: apiextensions.crossplane.io/v1
+apiVersion: apiextensions.crossplane.io/v2
 kind: CompositeResourceDefinition
 metadata:
-  name: xsimplebuckets.storage.example.org
+  name: simplebuckets.storage.example.org
 spec:
+  scope: Namespaced
   group: storage.example.org
   names:
-    kind: XSimpleBucket
-    plural: xsimplebuckets
-  claimNames:
     kind: SimpleBucket
     plural: simplebuckets
   versions:
@@ -63,45 +73,43 @@ spec:
             spec:
               type: object
               properties:
-                parameters:
-                  type: object
-                  properties:
-                    region:
-                      type: string
-                      description: AWS region for the bucket
-                  required:
-                    - region
+                region:
+                  type: string
+                  description: AWS region for the bucket
               required:
-                - parameters
+                - region
 ```
+
+> `referenceable: true` is harmless in v2 and still accepted; omit it if your CRD schema rejects it.
 
 ```bash
 kubectl apply -f xrd-simplebucket.yaml
 kubectl get xrd
-kubectl describe xrd xsimplebuckets.storage.example.org
+kubectl describe xrd simplebuckets.storage.example.org
 ```
 
-Look for `Established: True` and `Offered: True`.
+Look for `Established: True`.
 
 **Confirm the new API exists:**
 
 ```bash
 kubectl api-resources | grep storage.example.org
-kubectl explain simplebucket.spec.parameters
+kubectl explain simplebucket.spec
 ```
 
-You should see only `region` — exactly what you declared, nothing from the underlying `Bucket` CRD leaking through.
+You should see `region` plus the `crossplane` machinery block Crossplane adds automatically — nothing from the underlying `Bucket` CRD leaks through.
 
 ---
 
-## Module 3: Install the Patch-and-Transform Function
+## Module 3: Install the Functions
 
-Recent Crossplane versions removed the old "Resources mode" Composition (a bare `spec.resources:` list). Every Composition is now a **Pipeline** of one or more **Functions** — small components that tell Crossplane what to compose. For plain base-and-patch composition (no custom logic), the community-maintained `function-patch-and-transform` reproduces the old behavior, so you install it once per cluster and every Composition's pipeline calls it.
+Every Composition is a **Pipeline** of **Functions**. This lab uses two:
 
-> **How to tell you need this:** if `kubectl apply` on a Composition fails with `strict decoding error: unknown field "spec.resources"`, your cluster's Crossplane version requires Pipeline mode — this module is why.
+- `function-patch-and-transform` — base-and-patch composition (no custom logic).
+- `function-auto-ready` — marks the XR `Ready` once all composed resources are ready.
 
 ```bash
-vi function-patch-and-transform.yaml
+vi functions.yaml
 ```
 
 ```yaml
@@ -110,21 +118,30 @@ kind: Function
 metadata:
   name: function-patch-and-transform
 spec:
-  package: xpkg.upbound.io/crossplane-contrib/function-patch-and-transform:v0.7.0
+  package: xpkg.crossplane.io/crossplane-contrib/function-patch-and-transform:v0.10.3
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Function
+metadata:
+  name: function-auto-ready
+spec:
+  package: xpkg.crossplane.io/crossplane-contrib/function-auto-ready:v0.6.3
 ```
 
+> Packages now live under `xpkg.crossplane.io` (previously `xpkg.upbound.io`). Check the [Crossplane docs](https://docs.crossplane.io) for the newest function versions.
+
 ```bash
-kubectl apply -f function-patch-and-transform.yaml
+kubectl apply -f functions.yaml
 kubectl get functions
 ```
 
-Confirm `INSTALLED` and `HEALTHY` are both `True` before moving on — the Composition in the next module references this Function by name, so it must exist first.
+Confirm `INSTALLED` and `HEALTHY` are both `True` on both before moving on.
 
 ```bash
-kubectl get pods -n crossplane-system -l pkg.crossplane.io/function=function-patch-and-transform
+kubectl get pods -n crossplane-system
 ```
 
-A Function gets its own pod, the same way a Provider does.
+Each Function gets its own pod, the same way a Provider does.
 
 ---
 
@@ -148,7 +165,7 @@ metadata:
 spec:
   compositeTypeRef:
     apiVersion: storage.example.org/v1alpha1
-    kind: XSimpleBucket
+    kind: SimpleBucket
   mode: Pipeline
   pipeline:
     - step: patch-and-transform
@@ -160,23 +177,27 @@ spec:
         resources:
           - name: bucket
             base:
-              apiVersion: s3.aws.upbound.io/v1beta1
+              apiVersion: s3.aws.m.upbound.io/v1beta1
               kind: Bucket
               spec:
                 forProvider: {}
                 providerConfigRef:
+                  kind: ClusterProviderConfig
                   name: default
             patches:
               - type: FromCompositeFieldPath
-                fromFieldPath: spec.parameters.region
+                fromFieldPath: spec.region
                 toFieldPath: spec.forProvider.region
+    - step: automatically-detect-ready-composed-resources
+      functionRef:
+        name: function-auto-ready
 ```
 
-Compared to the old shape, three things changed and nothing else did:
+Key points:
 
-- **`mode: Pipeline`** marks this as a function-based Composition.
-- **`pipeline:`** holds one step here (`patch-and-transform`), naming the Function to call via `functionRef`.
-
+- **`mode: Pipeline`** marks this as a function-based Composition (the only mode in v2).
+- **Namespaced Bucket:** the composed `Bucket` is created in the same namespace as the XR automatically — you don't set `metadata.namespace`.
+- **`ClusterProviderConfig`:** v2 providers have cluster-wide `ClusterProviderConfig` and namespaced `ProviderConfig`. If your lab uses a namespaced one, change `kind` to `ProviderConfig`.
 
 ```bash
 kubectl apply -f composition-simplebucket.yaml
@@ -184,14 +205,14 @@ kubectl get composition
 kubectl describe composition simplebucket-aws
 ```
 
-Look for `Synced: True`.
-
 ---
 
-## Module 5: Submit a Claim
+## Module 5: Create the XR
+
+No Claim step in v2 — you apply the namespaced XR directly.
 
 ```bash
-vi claim-simplebucket.yaml
+vi xr-simplebucket.yaml
 ```
 
 ```yaml
@@ -201,14 +222,14 @@ metadata:
   name: my-first-bucket
   namespace: default
 spec:
-  parameters:
-    region: us-east-1
-  compositionRef:
-    name: simplebucket-aws
+  region: us-east-1
+  crossplane:
+    compositionRef:
+      name: simplebucket-aws
 ```
 
 ```bash
-kubectl apply -f claim-simplebucket.yaml
+kubectl apply -f xr-simplebucket.yaml
 kubectl get simplebucket -n default
 ```
 
@@ -220,29 +241,31 @@ kubectl get pods -n crossplane-system -l pkg.crossplane.io/provider=provider-aws
 
 ---
 
-## Module 6: Trace Claim → XR → Managed Resource
+## Module 6: Trace XR → Managed Resource
+
+Use the fully qualified Bucket name to avoid clashing with any legacy cluster-scoped `Bucket`:
 
 ```bash
-kubectl get simplebucket,xsimplebucket,bucket
+kubectl get simplebucket,buckets.s3.aws.m.upbound.io -n default
 ```
 
-Confirm `READY` and `SYNCED` are `True` on all three.
+Confirm `READY` and `SYNCED` are `True` on both.
 
 ```bash
 kubectl describe simplebucket my-first-bucket -n default
 ```
 
-Note the `Resource Refs` pointing at the `XSimpleBucket`, then:
+Note the `Resource Refs` under `Spec > Crossplane`, pointing at the composed `Bucket`. Then:
 
 ```bash
-kubectl get xsimplebucket -o wide
-kubectl describe xsimplebucket <name-from-above>
+kubectl get buckets.s3.aws.m.upbound.io -n default
+kubectl describe buckets.s3.aws.m.upbound.io <name-from-above> -n default
 ```
 
-That describe output points at the actual `Bucket` object, which you can inspect exactly as you did in previous labs:
+You can also render the whole tree:
 
 ```bash
-kubectl describe bucket <name-from-above>
+crossplane beta trace simplebucket my-first-bucket -n default
 ```
 
 **Cross-verify against AWS:**
@@ -256,8 +279,8 @@ aws s3api list-buckets --query "Buckets[?contains(Name, 'my-first-bucket')]"
 ## Module 7: Cleanup
 
 ```bash
-kubectl delete -f claim-simplebucket.yaml
-kubectl get bucket
+kubectl delete -f xr-simplebucket.yaml
+kubectl get buckets.s3.aws.m.upbound.io -n default
 kubectl delete -f composition-simplebucket.yaml
 kubectl delete -f xrd-simplebucket.yaml
 kubectl api-resources | grep storage.example.org
@@ -265,7 +288,4 @@ kubectl api-resources | grep storage.example.org
 
 The last command should return nothing.
 
-> **Leave `function-patch-and-transform` installed.** It's a cluster-wide, reusable Function — every future Composition's pipeline (including the `VPCNetwork` lab) references it by name. Only remove it with `kubectl delete -f function-patch-and-transform.yaml` if you're tearing down Crossplane entirely.
-
----
-
+> **Leave `functions.yaml` applied.** Both Functions are cluster-wide and reusable — every future Composition (including the `VPCNetwork` lab) references them by name. Remove them with `kubectl delete -f functions.yaml` only if you're tearing down Crossplane entirely.
